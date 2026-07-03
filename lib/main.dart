@@ -156,7 +156,7 @@ class _OrderBoardScreenState extends State<OrderBoardScreen> {
     await notificationsPlugin.show(
       order.orderNumber,
       'New Order #${order.orderNumber}',
-      '${order.name} — $${order.total.toStringAsFixed(2)}',
+      '${order.name} — \$${order.total.toStringAsFixed(2)}',
       const NotificationDetails(android: AndroidNotificationDetails(
         'new_orders', 'New Orders',
         channelDescription: 'Notifications for new print orders',
@@ -283,7 +283,7 @@ class _OrderBoardScreenState extends State<OrderBoardScreen> {
               Text(fmt.format(order.createdAt.toLocal()), style: TextStyle(color: Colors.grey.shade500, fontSize: 11)),
             ])),
             Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              Text('$${order.total.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              Text('\$${order.total.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               const Icon(Icons.chevron_right, color: Colors.grey, size: 18),
             ]),
           ]),
@@ -333,7 +333,7 @@ class OrderDetailScreen extends StatelessWidget {
                   child: Center(child: Text('$i', style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12)))),
                 const SizedBox(width: 10),
                 Expanded(child: Text('${p.pages} page${p.pages == 1 ? '' : 's'} · ${p.size} · ${p.colorMode}')),
-                Text('$${p.price.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                Text('\$${p.price.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.w600)),
               ]));
             }).toList()),
           const SizedBox(height: 12),
@@ -388,7 +388,7 @@ class OrderDetailScreen extends StatelessWidget {
     child: Row(children: [
       Text(label, style: TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.normal, fontSize: bold ? 16 : 14)),
       const Spacer(),
-      Text('$${amount.toStringAsFixed(2)}', style: TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.normal, fontSize: bold ? 16 : 14)),
+      Text('\$${amount.toStringAsFixed(2)}', style: TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.normal, fontSize: bold ? 16 : 14)),
     ]),
   );
 }
