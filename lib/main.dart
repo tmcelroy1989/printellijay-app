@@ -3,21 +3,96 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_background_service_android/flutter_background_service_android.dart';
 
 const String API_BASE = 'https://www.printellijay.net/api/orders';
 const String APP_SECRET = 'ellijay2026';
 
-final FlutterLocalNotificationsPlugin notificationsPlugin =
-    FlutterLocalNotificationsPlugin();
+final FlutterLocalNotificationsPlugin notificationsPlugin = FlutterLocalNotificationsPlugin();
+
+@pragma('vm:entry-point')
+void onStart(ServiceInstance service) async {
+  DartPluginRegistrant.ensureInitialized();
+  final bgNotifications = FlutterLocalNotificationsPlugin();
+  const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+  await bgNotifications.initialize(const InitializationSettings(android: androidInit));
+  if (service is AndroidServiceInstance) {
+    service.on('setAsForeground').listen((event) { service.setAsForegroundService(); });
+    service.on('setAsBackground').listen((event) { service.setAsBackgroundService(); });
+  }
+  service.on('stopService').listen((event) { service.stopSelf(); });
+  await _checkNewOrdersBg(bgNotifications);
+  Timer.periodic(const Duration(seconds: 60), (timer) async {
+    await _checkNewOrdersBg(bgNotifications);
+  });
+}
+
+Future<void> _checkNewOrdersBg(FlutterLocalNotificationsPlugin plugin) async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final resp = await http.get(Uri.parse(API_BASE), headers: {'x-app-secret': APP_SECRET})
+        .timeout(const Duration(seconds: 15));
+    if (resp.statusCode != 200) return;
+    final List<dynamic> orders = json.decode(resp.body);
+    final List<String> known = prefs.getStringList('known_order_ids') ?? [];
+    final List<String> newKnown = List.from(known);
+    int newCount = 0;
+    String lastOrderNum = '';
+    for (final o in orders) {
+      final String id = o['id']?.toString() ?? '';
+      if (id.isNotEmpty && !known.contains(id)) {
+        newCount++;
+        lastOrderNum = o['orderNumber']?.toString() ?? id;
+        newKnown.add(id);
+      }
+    }
+    if (newCount > 0) {
+      await prefs.setStringList('known_order_ids', newKnown);
+      final String title = newCount == 1 ? 'New Order #${lastOrderNum}' : '${newCount} New Orders';
+      await plugin.show(
+        DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        title,
+        'Tap to view in Print Ellijay',
+        const NotificationDetails(android: AndroidNotificationDetails(
+          'new_orders', 'New Orders',
+          channelDescription: 'Alerts for new print orders',
+          importance: Importance.max, priority: Priority.high,
+          playSound: true, enableVibration: true,
+          icon: '@mipmap/ic_launcher',
+        )),
+      );
+    }
+  } catch (_) {}
+}
+
+Future<void> initializeBackgroundService() async {
+  final service = FlutterBackgroundService();
+  await service.configure(
+    androidConfiguration: AndroidConfiguration(
+      onStart: onStart, autoStart: true, isForegroundMode: false,
+    ),
+    iosConfiguration: IosConfiguration(autoStart: false),
+  );
+  service.startService();
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-  await notificationsPlugin.initialize(
-    const InitializationSettings(android: androidInit),
+  await notificationsPlugin.initialize(const InitializationSettings(android: androidInit));
+  const AndroidNotificationChannel channel = AndroidNotificationChannel(
+    'new_orders', 'New Orders',
+    description: 'Alerts for new print orders',
+    importance: Importance.max, playSound: true, enableVibration: true,
   );
+  await notificationsPlugin
+      .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(channel);
+  await initializeBackgroundService();
   runApp(const PrintEllijayApp());
 }
 
@@ -26,369 +101,261 @@ class PrintEllijayApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Print Ellijay',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF2D6A4F),
-          brightness: Brightness.light,
-        ),
-        useMaterial3: true,
-      ),
-      home: const OrderBoardScreen(),
+      title: 'Print Ellijay', debugShowCheckedModeBanner: false,
+      theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple), useMaterial3: true),
+      home: const OrdersScreen(),
     );
   }
 }
 
 class PrintItem {
-  final String size;
-  final String colorMode;
+  final String size, colorMode, instructions;
   final int pages;
   final double price;
-  PrintItem({required this.size, required this.colorMode, required this.pages, required this.price});
+  PrintItem({required this.size, required this.colorMode, required this.pages, required this.price, required this.instructions});
   factory PrintItem.fromJson(Map<String, dynamic> j) => PrintItem(
-    size: j['size'] ?? '',
-    colorMode: j['colorMode'] ?? j['color'] ?? '',
-    pages: (j['pages'] ?? j['quantity'] ?? 1) is int ? (j['pages'] ?? j['quantity'] ?? 1) : int.tryParse('${j['pages'] ?? j['quantity'] ?? 1}') ?? 1,
-    price: (j['price'] ?? 0).toDouble(),
-  );
+    size: j['size'] ?? '', colorMode: j['colorMode'] ?? '', pages: j['pages'] ?? 1,
+    price: (j['lineSubtotal'] ?? 0).toDouble(), instructions: j['instructions'] ?? '');
 }
 
 class Order {
-  final String id;
+  final String id, name, email, notes;
   final int orderNumber;
-  String status;
+  final List<PrintItem> items;
+  final double subtotal, tax, total;
   final DateTime createdAt;
-  final String name;
-  final String email;
-  final String phone;
-  final String notes;
-  final List<PrintItem> prints;
-  final double subtotal;
-  final double tax;
-  final double total;
-  Order({required this.id, required this.orderNumber, required this.status,
-    required this.createdAt, required this.name, required this.email,
-    required this.phone, required this.notes, required this.prints,
-    required this.subtotal, required this.tax, required this.total});
+  String status;
+  Order({required this.id, required this.name, required this.email, required this.notes,
+    required this.orderNumber, required this.items, required this.subtotal,
+    required this.tax, required this.total, required this.createdAt, required this.status});
   factory Order.fromJson(Map<String, dynamic> j) => Order(
-    id: j['id'] ?? '',
-    orderNumber: (j['orderNumber'] ?? 0) is int ? j['orderNumber'] : int.tryParse('${j['orderNumber']}') ?? 0,
-    status: j['status'] ?? 'New',
-    createdAt: DateTime.tryParse(j['createdAt'] ?? '') ?? DateTime.now(),
-    name: j['name'] ?? '',
-    email: j['email'] ?? '',
-    phone: j['phone'] ?? '',
-    notes: j['notes'] ?? '',
-    prints: (j['prints'] as List? ?? []).map((p) => PrintItem.fromJson(p as Map<String, dynamic>)).toList(),
-    subtotal: (j['subtotal'] ?? 0).toDouble(),
-    tax: (j['tax'] ?? 0).toDouble(),
-    total: (j['total'] ?? 0).toDouble(),
-  );
+    id: j['id'] ?? '', name: j['name'] ?? '', email: j['email'] ?? '', notes: j['notes'] ?? '',
+    orderNumber: j['orderNumber'] ?? 0,
+    items: (j['lineItems'] as List<dynamic>? ?? []).map((i) => PrintItem.fromJson(i as Map<String, dynamic>)).toList(),
+    subtotal: (j['subtotal'] ?? 0).toDouble(), tax: (j['tax'] ?? 0).toDouble(), total: (j['total'] ?? 0).toDouble(),
+    createdAt: DateTime.tryParse(j['createdAt'] ?? '') ?? DateTime.now(), status: j['status'] ?? 'New');
 }
-const List<String> STATUS_COLUMNS = ['New', 'Review', 'Printed', 'Paid', 'PickedUp'];
-const Map<String, Color> STATUS_COLORS = {
-  'New': Color(0xFF1565C0), 'Review': Color(0xFFF57F17),
-  'Printed': Color(0xFF2E7D32), 'Paid': Color(0xFF6A1B9A), 'PickedUp': Color(0xFF757575),
-};
-const Map<String, IconData> STATUS_ICONS = {
-  'New': Icons.fiber_new, 'Review': Icons.rate_review,
-  'Printed': Icons.print, 'Paid': Icons.attach_money, 'PickedUp': Icons.check_circle,
-};
 
-class OrderBoardScreen extends StatefulWidget {
-  const OrderBoardScreen({super.key});
+const List<String> kStatuses = ['New', 'Review', 'Printed', 'Paid', 'PickedUp'];
+
+class OrdersScreen extends StatefulWidget {
+  const OrdersScreen({super.key});
   @override
-  State<OrderBoardScreen> createState() => _OrderBoardScreenState();
+  State<OrdersScreen> createState() => _OrdersScreenState();
 }
 
-class _OrderBoardScreenState extends State<OrderBoardScreen> {
+class _OrdersScreenState extends State<OrdersScreen> {
   List<Order> _orders = [];
   bool _loading = true;
   String? _error;
-  Timer? _pollTimer;
-  Set<String> _seenIds = {};
-
+  Timer? _timer;
   @override
-  void initState() {
-    super.initState();
-    _loadSeenIds().then((_) => _fetchOrders());
-    _pollTimer = Timer.periodic(const Duration(seconds: 60), (_) => _fetchOrders());
-  }
-
+  void initState() { super.initState(); _fetchOrders(); _timer = Timer.periodic(const Duration(seconds: 60), (_) => _fetchOrders()); }
   @override
-  void dispose() { _pollTimer?.cancel(); super.dispose(); }
-
-  Future<void> _loadSeenIds() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() => _seenIds = (prefs.getStringList('seen_order_ids') ?? []).toSet());
-  }
-
-  Future<void> _saveSeenIds() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('seen_order_ids', _seenIds.toList());
-  }
-
+  void dispose() { _timer?.cancel(); super.dispose(); }
   Future<void> _fetchOrders() async {
     try {
-      final resp = await http.get(Uri.parse(API_BASE), headers: {'x-app-secret': APP_SECRET});
+      final resp = await http.get(Uri.parse(API_BASE), headers: {'x-app-secret': APP_SECRET}).timeout(const Duration(seconds: 15));
       if (resp.statusCode == 200) {
-        final List data = json.decode(resp.body);
-        final orders = data.map((j) => Order.fromJson(j)).toList()
-          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-        for (final order in orders) {
-          if (!_seenIds.contains(order.id)) {
-            _notifyNewOrder(order);
-            _seenIds.add(order.id);
-          }
-        }
-        await _saveSeenIds();
-        setState(() { _orders = orders; _loading = false; _error = null; });
+        final List<dynamic> data = json.decode(resp.body);
+        final List<Order> fetched = data.map((j) => Order.fromJson(j as Map<String, dynamic>)).toList();
+        fetched.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+        if (mounted) setState(() { _orders = fetched; _loading = false; _error = null; });
       } else {
-        setState(() { _error = 'Server error ${resp.statusCode}'; _loading = false; });
+        if (mounted) setState(() { _error = 'Server error ${resp.statusCode}'; _loading = false; });
       }
     } catch (e) {
-      setState(() { _error = 'Could not connect: $e'; _loading = false; });
+      if (mounted) setState(() { _error = 'Could not connect: ${e}'; _loading = false; });
     }
   }
-
-  void _notifyNewOrder(Order order) async {
-    await notificationsPlugin.show(
-      order.orderNumber,
-      'New Order #${order.orderNumber}',
-      '${order.name} — \$${order.total.toStringAsFixed(2)}',
-      const NotificationDetails(android: AndroidNotificationDetails(
-        'new_orders', 'New Orders',
-        channelDescription: 'Notifications for new print orders',
-        importance: Importance.high, priority: Priority.high,
-      )),
-    );
-  }
-
   Future<void> _updateStatus(Order order, String newStatus) async {
     try {
-      final resp = await http.patch(
-        Uri.parse(API_BASE),
-        headers: {'Content-Type': 'application/json', 'x-app-secret': APP_SECRET},
-        body: json.encode({'id': order.id, 'status': newStatus}),
-      );
-      if (resp.statusCode == 200) await _fetchOrders();
+      await http.patch(Uri.parse('${API_BASE}/${order.id}'),
+        headers: {'x-app-secret': APP_SECRET, 'Content-Type': 'application/json'},
+        body: json.encode({'status': newStatus}));
+      setState(() { order.status = newStatus; if (newStatus == 'PickedUp') _orders.remove(order); });
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Update failed: ${e}')));
     }
   }
-
-  List<Order> _ordersForStatus(String status) => _orders.where((o) => o.status == status).toList();
-
+  Color _statusColor(String s) {
+    switch (s) {
+      case 'New': return Colors.blue;
+      case 'Review': return Colors.orange;
+      case 'Printed': return Colors.green;
+      case 'Paid': return Colors.teal;
+      default: return Colors.grey;
+    }
+  }
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Print Ellijay', style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: const Color(0xFF2D6A4F),
-        foregroundColor: Colors.white,
-        actions: [IconButton(icon: const Icon(Icons.refresh), onPressed: () { setState(() => _loading = true); _fetchOrders(); })],
+        title: const Text('Print Ellijay Orders'),
+        backgroundColor: Colors.deepPurple, foregroundColor: Colors.white,
+        actions: [IconButton(icon: const Icon(Icons.refresh),
+          onPressed: () { setState(() { _loading = true; }); _fetchOrders(); })],
       ),
       body: _loading ? const Center(child: CircularProgressIndicator())
-          : _error != null ? _buildError() : _buildBoard(),
+          : _error != null ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              const Icon(Icons.error_outline, size: 48, color: Colors.red),
+              const SizedBox(height: 12),
+              Padding(padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(_error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.red))),
+              const SizedBox(height: 16),
+              ElevatedButton(onPressed: () { setState(() { _loading = true; }); _fetchOrders(); }, child: const Text('Retry')),
+            ]))
+          : _orders.isEmpty ? const Center(child: Text('No active orders', style: TextStyle(fontSize: 18)))
+          : RefreshIndicator(
+              onRefresh: _fetchOrders,
+              child: ListView.builder(
+                padding: const EdgeInsets.all(12),
+                itemCount: _orders.length,
+                itemBuilder: (ctx, i) => _OrderTile(
+                  order: _orders[i], statusColor: _statusColor(_orders[i].status), onUpdateStatus: _updateStatus),
+              )),
     );
   }
+}
 
-  Widget _buildError() => Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-    const Icon(Icons.wifi_off, size: 64, color: Colors.grey),
-    const SizedBox(height: 16), Text(_error!, textAlign: TextAlign.center),
-    const SizedBox(height: 16), ElevatedButton(onPressed: _fetchOrders, child: const Text('Retry')),
-  ]));
-
-  Widget _buildBoard() {
-    final activeStatuses = STATUS_COLUMNS.where((s) => s != 'PickedUp').toList();
-    return Column(children: [
-      Container(
-        color: const Color(0xFF1B4332),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: Row(children: [
-          Text('${_orders.length} active order${_orders.length == 1 ? '' : 's'}', style: const TextStyle(color: Colors.white70, fontSize: 13)),
-          const Spacer(),
-          ...activeStatuses.map((s) {
-            final count = _ordersForStatus(s).length;
-            if (count == 0) return const SizedBox.shrink();
-            return Container(
-              margin: const EdgeInsets.only(left: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              decoration: BoxDecoration(color: STATUS_COLORS[s]!.withOpacity(0.8), borderRadius: BorderRadius.circular(12)),
-              child: Text('$count $s', style: const TextStyle(color: Colors.white, fontSize: 11)),
-            );
-          }),
-        ]),
-      ),
-      Expanded(
-        child: ListView.builder(
-          padding: const EdgeInsets.all(12),
-          itemCount: activeStatuses.length,
-          itemBuilder: (ctx, i) => _buildStatusSection(activeStatuses[i], _ordersForStatus(activeStatuses[i])),
-        ),
-      ),
-    ]);
-  }
-
-  Widget _buildStatusSection(String status, List<Order> orders) {
-    final color = STATUS_COLORS[status]!;
-    return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      decoration: BoxDecoration(color: Colors.grey.shade50, borderRadius: BorderRadius.circular(12), border: Border.all(color: color.withOpacity(0.3))),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: const BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12))),
-          child: Row(children: [
-            Icon(STATUS_ICONS[status], color: color, size: 20), const SizedBox(width: 8),
-            Text(status, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 16)),
-            const Spacer(),
-            if (orders.isNotEmpty) Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(10)),
-              child: Text('${orders.length}', style: const TextStyle(color: Colors.white, fontSize: 12)),
-            ),
-          ]),
-        ),
-        if (orders.isEmpty) const Padding(padding: EdgeInsets.all(16), child: Text('No orders', style: TextStyle(color: Colors.grey)))
-        else ...orders.map((o) => _buildOrderTile(o, color)),
-      ]),
-    );
-  }
-
-  Widget _buildOrderTile(Order order, Color statusColor) {
-    final fmt = DateFormat('MMM d, h:mm a');
-    final printSummary = order.prints.isEmpty ? 'No items' : order.prints.map((p) => '${p.pages}x ${p.size}').join(', ');
+class _OrderTile extends StatelessWidget {
+  final Order order;
+  final Color statusColor;
+  final Future<void> Function(Order, String) onUpdateStatus;
+  const _OrderTile({required this.order, required this.statusColor, required this.onUpdateStatus});
+  @override
+  Widget build(BuildContext context) {
     return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), elevation: 1,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: BorderSide(color: statusColor.withOpacity(0.2))),
+      margin: const EdgeInsets.only(bottom: 10), elevation: 3,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: InkWell(
-        borderRadius: BorderRadius.circular(8),
-        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => OrderDetailScreen(order: order, onStatusChanged: (s) => _updateStatus(order, s)))),
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _showDetail(context),
         child: Padding(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.all(14),
           child: Row(children: [
-            Container(
-              width: 52, height: 52,
-              decoration: BoxDecoration(color: statusColor.withOpacity(0.1), borderRadius: BorderRadius.circular(8), border: Border.all(color: statusColor.withOpacity(0.3))),
-              child: Center(child: Text('#${order.orderNumber}', style: TextStyle(color: statusColor, fontWeight: FontWeight.bold, fontSize: 13))),
-            ),
-            const SizedBox(width: 12),
+            Container(width: 10, height: 60,
+              decoration: BoxDecoration(color: statusColor, borderRadius: BorderRadius.circular(5))),
+            const SizedBox(width: 14),
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(order.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-              const SizedBox(height: 2),
-              Text(printSummary, style: TextStyle(color: Colors.grey.shade600, fontSize: 12), maxLines: 1, overflow: TextOverflow.ellipsis),
-              const SizedBox(height: 2),
-              Text(fmt.format(order.createdAt.toLocal()), style: TextStyle(color: Colors.grey.shade500, fontSize: 11)),
+              Text('Order #${order.orderNumber}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              Text(order.name, style: const TextStyle(fontSize: 14)),
+              Text('${order.items.length} item${order.items.length == 1 ? \"\" : \"s\"} \u00b7 \$${order.total.toStringAsFixed(2)}',
+                style: const TextStyle(color: Colors.grey, fontSize: 12)),
             ])),
-            Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              Text('\$${order.total.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              const Icon(Icons.chevron_right, color: Colors.grey, size: 18),
-            ]),
+            Chip(label: Text(order.status, style: const TextStyle(color: Colors.white, fontSize: 11)),
+              backgroundColor: statusColor, padding: EdgeInsets.zero),
           ]),
         ),
+      ),
+    );
+  }
+  void _showDetail(BuildContext context) {
+    showModalBottomSheet(context: context, isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _OrderDetail(order: order, onUpdateStatus: onUpdateStatus));
+  }
+}
+
+class _OrderDetail extends StatefulWidget {
+  final Order order;
+  final Future<void> Function(Order, String) onUpdateStatus;
+  const _OrderDetail({required this.order, required this.onUpdateStatus});
+  @override
+  State<_OrderDetail> createState() => _OrderDetailState();
+}
+
+class _OrderDetailState extends State<_OrderDetail> {
+  bool _updating = false;
+  Future<void> _changeStatus(String s) async {
+    setState(() => _updating = true);
+    await widget.onUpdateStatus(widget.order, s);
+    setState(() => _updating = false);
+    if (mounted && s == 'PickedUp') Navigator.pop(context);
+  }
+  @override
+  Widget build(BuildContext context) {
+    final o = widget.order;
+    final fmt = DateFormat('MMM d, y \u00b7 h:mm a');
+    return DraggableScrollableSheet(
+      expand: false, initialChildSize: 0.7, maxChildSize: 0.95,
+      builder: (_, ctrl) => SingleChildScrollView(
+        controller: ctrl,
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Center(child: Container(width: 40, height: 4,
+            decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)))),
+          const SizedBox(height: 16),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            Text('Order #${o.orderNumber}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 22)),
+            Text(fmt.format(o.createdAt), style: const TextStyle(color: Colors.grey, fontSize: 12)),
+          ]),
+          const SizedBox(height: 4),
+          Text(o.name, style: const TextStyle(fontSize: 16)),
+          Text(o.email, style: const TextStyle(color: Colors.grey, fontSize: 13)),
+          const Divider(height: 24),
+          const Text('Items', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+          const SizedBox(height: 8),
+          ...o.items.map((p) => Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(8)),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                  Text('${p.size} \u00b7 ${p.colorMode}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                  Text('\$${p.price.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                ]),
+                Text('${p.pages} page${p.pages == 1 ? \"\" : \"s\"}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                if (p.instructions.isNotEmpty)
+                  Padding(padding: const EdgeInsets.only(top: 4),
+                    child: Text('Notes: ${p.instructions}', style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic))),
+              ]),
+            ),
+          )),
+          if (o.notes.isNotEmpty) ...[
+            const Divider(height: 20),
+            const Text('Order Notes', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+            const SizedBox(height: 4),
+            Text(o.notes, style: const TextStyle(fontSize: 13)),
+          ],
+          const Divider(height: 24),
+          _TotalRow('Subtotal', o.subtotal, bold: false),
+          _TotalRow('Tax', o.tax, bold: false),
+          _TotalRow('Total', o.total, bold: true),
+          const SizedBox(height: 20),
+          const Text('Update Status', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+          const SizedBox(height: 10),
+          if (_updating) const Center(child: CircularProgressIndicator())
+          else Wrap(spacing: 8, runSpacing: 8,
+            children: kStatuses.map((s) {
+              final bool isCurrent = o.status == s;
+              return ElevatedButton(
+                onPressed: isCurrent ? null : () => _changeStatus(s),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: isCurrent ? Colors.deepPurple : Colors.grey[200],
+                  foregroundColor: isCurrent ? Colors.white : Colors.black87),
+                child: Text(s == 'PickedUp' ? 'Picked Up' : s));
+            }).toList()),
+        ]),
       ),
     );
   }
 }
-class OrderDetailScreen extends StatelessWidget {
-  final Order order;
-  final Function(String) onStatusChanged;
-  const OrderDetailScreen({super.key, required this.order, required this.onStatusChanged});
 
+class _TotalRow extends StatelessWidget {
+  final String label;
+  final double amount;
+  final bool bold;
+  const _TotalRow(this.label, this.amount, {required this.bold});
   @override
   Widget build(BuildContext context) {
-    final color = STATUS_COLORS[order.status]!;
-    final fmt = DateFormat("MMMM d, yyyy 'at' h:mm a");
-    final currentIdx = STATUS_COLUMNS.indexOf(order.status);
-    final nextStatuses = STATUS_COLUMNS.skip(currentIdx + 1).toList();
-    final prevStatuses = STATUS_COLUMNS.take(currentIdx).toList();
-    return Scaffold(
-      appBar: AppBar(title: Text('Order #${order.orderNumber}'), backgroundColor: color, foregroundColor: Colors.white),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(20), border: Border.all(color: color.withOpacity(0.4))),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(STATUS_ICONS[order.status], color: color, size: 18), const SizedBox(width: 6),
-              Text(order.status, style: TextStyle(color: color, fontWeight: FontWeight.bold)),
-            ]),
-          ),
-          const SizedBox(height: 16),
-          _card('Customer', [
-            _row(Icons.person, 'Name', order.name),
-            _row(Icons.email, 'Email', order.email),
-            if (order.phone.isNotEmpty) _row(Icons.phone, 'Phone', order.phone),
-            _row(Icons.schedule, 'Placed', fmt.format(order.createdAt.toLocal())),
-          ]),
-          const SizedBox(height: 12),
-          _card('Print Items', order.prints.isEmpty ? [const Text('No items')] :
-            order.prints.asMap().entries.map((e) {
-              final p = e.value; final i = e.key + 1;
-              return Padding(padding: const EdgeInsets.only(bottom: 8), child: Row(children: [
-                Container(width: 24, height: 24, decoration: BoxDecoration(color: color.withOpacity(0.1), shape: BoxShape.circle),
-                  child: Center(child: Text('$i', style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12)))),
-                const SizedBox(width: 10),
-                Expanded(child: Text('${p.pages} page${p.pages == 1 ? '' : 's'} · ${p.size} · ${p.colorMode}')),
-                Text('\$${p.price.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.w600)),
-              ]));
-            }).toList()),
-          const SizedBox(height: 12),
-          _card('Order Total', [
-            _total('Subtotal', order.subtotal), _total('Tax (7%)', order.tax),
-            const Divider(), _total('Total', order.total, bold: true),
-          ]),
-          if (order.notes.isNotEmpty) ...[const SizedBox(height: 12), _card('Notes', [Text(order.notes)])],
-          if (nextStatuses.isNotEmpty) ...[const SizedBox(height: 16),
-            const Text('Move Forward', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-            const SizedBox(height: 8),
-            Wrap(spacing: 8, children: nextStatuses.map((s) => ElevatedButton.icon(
-              icon: Icon(STATUS_ICONS[s], size: 18),
-              label: Text(s == 'PickedUp' ? 'Mark Picked Up' : 'Move to $s'),
-              style: ElevatedButton.styleFrom(backgroundColor: STATUS_COLORS[s], foregroundColor: Colors.white),
-              onPressed: () async { await onStatusChanged(s); if (context.mounted) Navigator.pop(context); },
-            )).toList()),
-          ],
-          if (prevStatuses.isNotEmpty) ...[const SizedBox(height: 12),
-            const Text('Move Back', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.grey)),
-            const SizedBox(height: 8),
-            Wrap(spacing: 8, children: prevStatuses.reversed.take(1).map((s) => OutlinedButton.icon(
-              icon: Icon(STATUS_ICONS[s], size: 16), label: Text('Back to $s'),
-              onPressed: () async { await onStatusChanged(s); if (context.mounted) Navigator.pop(context); },
-            )).toList()),
-          ],
-          const SizedBox(height: 32),
-        ]),
-      ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        Text(label, style: TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.normal, fontSize: bold ? 16 : 14)),
+        Text('\$${amount.toStringAsFixed(2)}', style: TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.normal, fontSize: bold ? 16 : 14)),
+      ]),
     );
   }
-
-  Widget _card(String title, List<Widget> children) => Card(
-    elevation: 1, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-    child: Padding(padding: const EdgeInsets.all(14), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.grey, letterSpacing: 0.5)),
-      const SizedBox(height: 10), ...children,
-    ])),
-  );
-
-  Widget _row(IconData icon, String label, String value) => Padding(
-    padding: const EdgeInsets.only(bottom: 8),
-    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Icon(icon, size: 16, color: Colors.grey), const SizedBox(width: 8),
-      Text('$label: ', style: const TextStyle(color: Colors.grey, fontSize: 13)),
-      Expanded(child: Text(value, style: const TextStyle(fontSize: 13))),
-    ]),
-  );
-
-  Widget _total(String label, double amount, {bool bold = false}) => Padding(
-    padding: const EdgeInsets.only(bottom: 4),
-    child: Row(children: [
-      Text(label, style: TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.normal, fontSize: bold ? 16 : 14)),
-      const Spacer(),
-      Text('\$${amount.toStringAsFixed(2)}', style: TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.normal, fontSize: bold ? 16 : 14)),
-    ]),
-  );
 }
