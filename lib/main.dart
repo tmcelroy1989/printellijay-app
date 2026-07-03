@@ -6,28 +6,25 @@ import 'dart:convert';
 import 'dart:ui';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
-import 'package:flutter_background_service/flutter_background_service.dart';
-import 'package:flutter_background_service_android/flutter_background_service_android.dart';
+import 'package:workmanager/workmanager.dart';
 
 const String API_BASE = 'https://www.printellijay.net/api/orders';
 const String APP_SECRET = 'ellijay2026';
 
 final FlutterLocalNotificationsPlugin notificationsPlugin = FlutterLocalNotificationsPlugin();
 
+const String checkOrdersTask = 'checkNewOrders';
+
 @pragma('vm:entry-point')
-void onStart(ServiceInstance service) async {
-  DartPluginRegistrant.ensureInitialized();
-  final bgNotifications = FlutterLocalNotificationsPlugin();
-  const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-  await bgNotifications.initialize(const InitializationSettings(android: androidInit));
-  if (service is AndroidServiceInstance) {
-    service.on('setAsForeground').listen((event) { service.setAsForegroundService(); });
-    service.on('setAsBackground').listen((event) { service.setAsBackgroundService(); });
-  }
-  service.on('stopService').listen((event) { service.stopSelf(); });
-  await _checkNewOrdersBg(bgNotifications);
-  Timer.periodic(const Duration(seconds: 60), (timer) async {
-    await _checkNewOrdersBg(bgNotifications);
+void callbackDispatcher() {
+  Workmanager().executeTask((task, inputData) async {
+    if (task == checkOrdersTask) {
+      final bgNotifications = FlutterLocalNotificationsPlugin();
+      const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+      await bgNotifications.initialize(const InitializationSettings(android: androidInit));
+      await _checkNewOrdersBg(bgNotifications);
+    }
+    return Future.value(true);
   });
 }
 
@@ -70,14 +67,13 @@ Future<void> _checkNewOrdersBg(FlutterLocalNotificationsPlugin plugin) async {
 }
 
 Future<void> initializeBackgroundService() async {
-  final service = FlutterBackgroundService();
-  await service.configure(
-    androidConfiguration: AndroidConfiguration(
-      onStart: onStart, autoStart: true, isForegroundMode: false,
-    ),
-    iosConfiguration: IosConfiguration(autoStart: false),
+  await Workmanager().initialize(callbackDispatcher);
+  await Workmanager().registerPeriodicTask(
+    'checkNewOrdersTask',
+    checkOrdersTask,
+    frequency: const Duration(minutes: 15),
+    constraints: Constraints(networkType: NetworkType.connected),
   );
-  service.startService();
 }
 
 void main() async {
