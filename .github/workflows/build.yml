@@ -23,6 +23,19 @@ jobs:
           cp -r tmp_project/ios ./ios
           rm -rf tmp_project
 
+      - name: Force consistent Kotlin stdlib version
+        run: |
+          printf '\n' >> android/build.gradle
+          printf 'allprojects {\n' >> android/build.gradle
+          printf '    configurations.all {\n' >> android/build.gradle
+          printf '        resolutionStrategy {\n' >> android/build.gradle
+          printf '            force("org.jetbrains.kotlin:kotlin-stdlib:1.9.10")\n' >> android/build.gradle
+          printf '            force("org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.10")\n' >> android/build.gradle
+          printf '            force("org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.10")\n' >> android/build.gradle
+          printf '        }\n' >> android/build.gradle
+          printf '    }\n' >> android/build.gradle
+          printf '}\n' >> android/build.gradle
+
       - name: Add permissions to AndroidManifest
         run: |
           sed -i 's/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">\n    <uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"\/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>/' android/app/src/main/AndroidManifest.xml
