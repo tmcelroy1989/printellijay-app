@@ -240,7 +240,7 @@ class _OrderTile extends StatelessWidget {
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('Order #${order.orderNumber}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               Text(order.name, style: const TextStyle(fontSize: 14)),
-              Text('${order.items.length} item${order.items.length == 1 ? \"\" : \"s\"} \u00b7 \$${order.total.toStringAsFixed(2)}',
+              Text('${order.items.length} item${order.items.length == 1 ? '' : 's'} · \${order.total.toStringAsFixed(2)}',
                 style: const TextStyle(color: Colors.grey, fontSize: 12)),
             ])),
             Chip(label: Text(order.status, style: const TextStyle(color: Colors.white, fontSize: 11)),
@@ -306,7 +306,7 @@ class _OrderDetailState extends State<_OrderDetail> {
                   Text('${p.size} \u00b7 ${p.colorMode}', style: const TextStyle(fontWeight: FontWeight.w600)),
                   Text('\$${p.price.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.w600)),
                 ]),
-                Text('${p.pages} page${p.pages == 1 ? \"\" : \"s\"}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                Text('${p.pages} page${p.pages == 1 ? '' : 's'}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
                 if (p.instructions.isNotEmpty)
                   Padding(padding: const EdgeInsets.only(top: 4),
                     child: Text('Notes: ${p.instructions}', style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic))),
