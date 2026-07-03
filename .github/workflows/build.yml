@@ -2,46 +2,40 @@ name: Build APK
 
 on:
   push:
-      branches: [main]
-        workflow_dispatch:
-        
-        jobs:
-          build:
-              runs-on: ubuntu-latest
-                  steps:
-                        - uses: actions/checkout@v4
-                        
-                              - uses: subosito/flutter-action@v2
-                                      with:
-                                                flutter-version: '3.22.0'
-                                                          channel: 'stable'
-                                                          
-                                                                - name: Create Flutter project scaffold
-                                                                        run: |
-                                                                                  flutter create --org net.printellijay --project-name print_ellijay_app tmp_project
-                                                                                            cp -r tmp_project/android ./android
-                                                                                                      cp -r tmp_project/ios ./ios
-                                                                                                                rm -rf tmp_project
-                                                                                                                
-                                                                                                                      - name: Patch main.dart imports for workmanager
-                                                                                                                              run: |
-                                                                                                                                        sed -i "/import 'dart:ui';/d" lib/main.dart
-                                                                                                                                                  sed -i "s|import 'package:flutter_background_service/flutter_background_service.dart';|import 'package:workmanager/workmanager.dart';|" lib/main.dart
-                                                                                                                                                            sed -i "/import 'package:flutter_background_service_android/d" lib/main.dart
-                                                                                                                                                        - name: Add permissions to AndroidManifest
-                                                                                                                                                                run: |
-                                                                                                                                                                          sed -i 's/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">\n    <uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"\/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>/' android/app/src/main/AndroidManifest.xml
-                                                                                                                                                                          
-                                                                                                                                                                                - name: Get dependencies
-                                                                                                                                                                                        run: flutter pub get
-                                                                                                                                                                                        
-                                                                                                                                                                                              - name: Build APK
-                                                                                                                                                                                                      run: flutter build apk --release --split-per-abi
-                                                                                                                                                                                                      
-                                                                                                                                                                                                            - name: Upload APK
-                                                                                                                                                                                                                    uses: actions/upload-artifact@v4
-                                                                                                                                                                                                                            with:
-                                                                                                                                                                                                                                      name: print-ellijay-apk
-                                                                                                                                                                                                                                                path: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
-                                                                                                                                                                                                                                                          retention-days: 30
-                                                                                                  
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+          channel: 'stable'
+
+      - name: Create Flutter project scaffold
+        run: |
+          flutter create --org net.printellijay --project-name print_ellijay_app tmp_project
+          cp -r tmp_project/android ./android
+          cp -r tmp_project/ios ./ios
+          rm -rf tmp_project
+
+      - name: Add permissions to AndroidManifest
+        run: |
+          sed -i 's/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">\n    <uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"\/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>/' android/app/src/main/AndroidManifest.xml
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build APK
+        run: flutter build apk --release --split-per-abi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: print-ellijay-apk
+          path: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          retention-days: 30
