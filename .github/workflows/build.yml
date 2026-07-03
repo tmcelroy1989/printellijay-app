@@ -16,6 +16,13 @@ jobs:
           flutter-version: '3.22.0'
           channel: 'stable'
 
+      - name: Create Flutter project scaffold
+        run: |
+          flutter create --org net.printellijay --project-name print_ellijay_app tmp_project
+          cp -r tmp_project/android ./android
+          cp -r tmp_project/ios ./ios
+          rm -rf tmp_project
+
       - name: Get dependencies
         run: flutter pub get
 
